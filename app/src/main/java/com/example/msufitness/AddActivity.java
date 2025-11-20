@@ -92,6 +92,9 @@ public class AddActivity extends AppCompatActivity {
                 }
             });
         });
+        // Good practice: shutdown executor if you don't plan to reuse it immediately,
+        // though for single clicks creating a new one is fine for this assignment scope.
+        executor.shutdown();
     }
 
     private void saveWorkout() {
@@ -117,12 +120,16 @@ public class AddActivity extends AppCompatActivity {
             JSONArray array = new JSONArray(jsonList);
 
             // Add new workout to the BEGINNING of the list (most recent)
-            // We need to shift/recreate the array to put new item at index 0
             JSONArray newArray = new JSONArray();
             newArray.put(workout);
-            for(int i=0; i<array.length(); i++) {
+
+            // --- FIXED LOGIC START ---
+            // Only copy the previous 4 items. This ensures the list size never exceeds 5.
+            // This prevents the "lag" caused by parsing massive JSON arrays.
+            for(int i=0; i<array.length() && i < 4; i++) {
                 newArray.put(array.get(i));
             }
+            // --- FIXED LOGIC END ---
 
             // Save back to SharedPreferences
             SharedPreferences.Editor editor = prefs.edit();
