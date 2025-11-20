@@ -29,6 +29,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.URL;
+import java.time.LocalDate;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -41,17 +42,20 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     private ImageView imgPreviewMain;
     private boolean isSensorPresent = false;
 
-    // Changed: Initialize to -1 to indicate "not set yet"
+    // Variables for Persistence and Reset Logic
     private float stepsAtReset = -1;
+    private String lastSavedDate = ""; // To track the day
 
     // Keys for Persistence
     public static final String PREFS_NAME = "MsuFitnessPrefs";
     public static final String KEY_WORKOUTS = "workout_list";
-
-    // NEW: Key to store the baseline step count
     private static final String KEY_STEP_BASELINE = "steps_baseline";
+    private static final String KEY_LAST_DATE = "steps_last_date"; // NEW KEY
 
     private static final int PERMISSION_REQUEST_CODE = 100;
+
+    // Single executor to avoid leaks (Better Practice)
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,14 +78,15 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             Toast.makeText(this, "Step sensor not available on this device", Toast.LENGTH_LONG).show();
         }
 
-        // NEW: Try to retrieve the saved baseline from previous sessions
+        // 3. Retrieve saved data
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         stepsAtReset = prefs.getFloat(KEY_STEP_BASELINE, -1);
+        lastSavedDate = prefs.getString(KEY_LAST_DATE, "");
 
-        // 3. Check Permissions (Rubric: Permissions)
+        // 4. Check Permissions
         checkSensorPermissions();
 
-        // 4. Button Logic (Rubric: Navigation)
+        // 5. Button Logic
         btnAdd.setOnClickListener(v -> {
             Intent intent = new Intent(MainActivity.this, AddActivity.class);
             startActivity(intent);
@@ -91,20 +96,28 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     @Override
     protected void onResume() {
         super.onResume();
-        // Rubric: Sensor Lifecycle Management
-        if (isSensorPresent && ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED) {
+        // Fix: Add null check to prevent crash on Emulator
+        if (isSensorPresent && stepSensor != null &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED) {
             sensorManager.registerListener(this, stepSensor, SensorManager.SENSOR_DELAY_UI);
         }
-        // Rubric: Activity Logging (Refresh list when returning)
         loadRecentActivities();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        // Rubric: Sensor Lifecycle Management (Prevent leaks)
-        if (isSensorPresent) {
+        if (isSensorPresent && sensorManager != null) {
             sensorManager.unregisterListener(this);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Fix: Shut down executor to prevent memory leaks
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdown();
         }
     }
 
@@ -112,38 +125,56 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     @Override
     public void onSensorChanged(SensorEvent event) {
         if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
-            float totalSteps = event.values[0];
+            float totalStepsOnDevice = event.values[0];
 
-            // NEW LOGIC: Handle Persistence
+            // Get the current date (e.g., "2023-11-19")
+            String todayDate = LocalDate.now().toString();
 
-            // Case 1: First time ever running the app or baseline not found
+            boolean needToSave = false;
+
+            // LOGIC 1: First run ever
             if (stepsAtReset == -1) {
-                stepsAtReset = totalSteps;
-                saveBaseline();
+                stepsAtReset = totalStepsOnDevice;
+                lastSavedDate = todayDate;
+                needToSave = true;
             }
-            // Case 2: Device rebooted (Sensor resets to 0, so totalSteps < stored baseline)
-            // We must reset our baseline to the new low number to avoid negative results.
-            else if (totalSteps < stepsAtReset) {
-                stepsAtReset = totalSteps;
-                saveBaseline();
+            // LOGIC 2: New Day Detected -> Reset counter for today
+            else if (!todayDate.equals(lastSavedDate)) {
+                stepsAtReset = totalStepsOnDevice; // Current total becomes the new zero
+                lastSavedDate = todayDate;
+                needToSave = true;
+            }
+            // LOGIC 3: Device Reboot (Sensor reset to 0)
+            else if (totalStepsOnDevice < stepsAtReset) {
+                stepsAtReset = totalStepsOnDevice;
+                needToSave = true;
             }
 
-            // Calculate steps since the baseline was set
-            int currentSessionSteps = (int)(totalSteps - stepsAtReset);
+            if (needToSave) {
+                saveStepData();
+            }
+
+            // Calculate steps for today
+            int currentSessionSteps = (int)(totalStepsOnDevice - stepsAtReset);
+
+            // Prevent negative numbers (just in case of weird sensor glitches)
+            if (currentSessionSteps < 0) currentSessionSteps = 0;
+
             tvStepCount.setText(String.valueOf(currentSessionSteps));
         }
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // Not needed for this assignment
+        // Not needed
     }
 
-    // NEW: Helper method to save the baseline to SharedPreferences
-    private void saveBaseline() {
+    // Helper method to save baseline AND date
+    private void saveStepData() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         SharedPreferences.Editor editor = prefs.edit();
         editor.putFloat(KEY_STEP_BASELINE, stepsAtReset);
+        editor.putString(KEY_LAST_DATE, lastSavedDate);
         editor.apply();
     }
 
@@ -166,20 +197,17 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
 
         try {
             JSONArray array = new JSONArray(jsonList);
-            // Display up to 5 most recent (Rubric: Activity Logging)
             for (int i = 0; i < array.length() && i < 5; i++) {
                 JSONObject obj = array.getJSONObject(i);
                 String type = obj.getString("type");
                 String duration = obj.getString("duration");
                 String imgUrl = obj.optString("url", "");
 
-                // Create a simple text view for the list item
                 TextView itemView = new TextView(this);
                 itemView.setText(String.format("• %s (%s mins)", type, duration));
                 itemView.setTextSize(18f);
                 itemView.setPadding(16, 16, 16, 16);
 
-                // Click listener to fetch image (Rubric: Networking & Error Handling)
                 itemView.setOnClickListener(v -> {
                     if (!imgUrl.isEmpty()) {
                         fetchImageForPreview(imgUrl);
@@ -197,16 +225,15 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
                 layoutRecentActivities.addView(empty);
             }
         } catch (Exception e) {
-            e.printStackTrace(); // Rubric: Error handling (graceful fail)
+            e.printStackTrace();
         }
     }
 
-    // Rubric: Networking and Threading (ExecutorService)
     private void fetchImageForPreview(String urlString) {
         Toast.makeText(this, "Loading image...", Toast.LENGTH_SHORT).show();
-        ExecutorService executor = Executors.newSingleThreadExecutor();
         Handler handler = new Handler(Looper.getMainLooper());
 
+        // Uses the class-level executor (Fixing the thread leak)
         executor.execute(() -> {
             Bitmap bmp = null;
             try {

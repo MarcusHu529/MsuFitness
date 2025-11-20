@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.example.msufitness"
-    compileSdk = 36
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.msufitness"
